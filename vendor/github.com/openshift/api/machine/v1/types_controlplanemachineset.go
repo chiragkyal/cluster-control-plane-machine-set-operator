@@ -42,6 +42,17 @@ type ControlPlaneMachineSet struct {
 
 // ControlPlaneMachineSet represents the configuration of the ControlPlaneMachineSet.
 type ControlPlaneMachineSetSpec struct {
+	// MachineNamePrefix is the prefix used when creating machine names.
+	// Each machine name will consist of this prefix, followed by a randomly generated string of 5 characters,
+	// and an index of the machine. The prefix must not end with a special character,
+	// and only lowercase alphanumeric characters and hyphens ('-') are allowed, with hyphens permitted only
+	// between characters. The prefix must be between 1 and 32 characters in length.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=32
+	// +openshift:enable:FeatureGate=CMPSMachineNamePrefix
+	// +optional
+	MachineNamePrefix string `json:"machineNamePrefix,omitempty"`
 	// State defines whether the ControlPlaneMachineSet is Active or Inactive.
 	// When Inactive, the ControlPlaneMachineSet will not take any action on the
 	// state of the Machines within the cluster.
