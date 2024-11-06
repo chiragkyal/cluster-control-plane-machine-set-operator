@@ -142,17 +142,18 @@ func NewMachineProvider(ctx context.Context, logger logr.Logger, cl client.Clien
 	}
 
 	o := &openshiftMachineProvider{
-		client:           cl,
-		failureDomains:   failureDomains,
-		machineSelector:  selector,
-		machineTemplate:  *cpms.Spec.Template.OpenShiftMachineV1Beta1Machine,
-		ownerMetadata:    cpms.ObjectMeta,
-		providerConfig:   providerConfig,
-		replicas:         replicas,
-		namespace:        cpms.Namespace,
-		machineAPIScheme: machineAPIScheme,
-		recorder:         recorder,
-		infrastructure:   infrastructure,
+		client:            cl,
+		failureDomains:    failureDomains,
+		machineSelector:   selector,
+		machineTemplate:   *cpms.Spec.Template.OpenShiftMachineV1Beta1Machine,
+		ownerMetadata:     cpms.ObjectMeta,
+		providerConfig:    providerConfig,
+		replicas:          replicas,
+		machineNamePrefix: cpms.Spec.MachineNamePrefix,
+		namespace:         cpms.Namespace,
+		machineAPIScheme:  machineAPIScheme,
+		recorder:          recorder,
+		infrastructure:    infrastructure,
 	}
 
 	if err := o.updateMachineCache(ctx, logger); err != nil {
@@ -199,6 +200,8 @@ type openshiftMachineProvider struct {
 	providerConfig providerconfig.ProviderConfig
 
 	replicas int32
+
+	machineNamePrefix string
 
 	// namespace store the namespace where new machines will be created.
 	namespace string
@@ -564,7 +567,7 @@ func isNodeNotReadyWithinNodeGracePeriod(node *corev1.Node) bool {
 // CreateMachine creates a new Machine from the template provider config based on the
 // failure domain index provided.
 func (m *openshiftMachineProvider) CreateMachine(ctx context.Context, logger logr.Logger, index int32) error {
-	machineName, err := m.getMachineName(index)
+	machineName, err := m.getMachineName(m.machineNamePrefix, index)
 	if err != nil {
 		return fmt.Errorf("could not generate machine name: %w", err)
 	}
@@ -624,7 +627,11 @@ func (m *openshiftMachineProvider) CreateMachine(ctx context.Context, logger log
 }
 
 // getMachineName generates a machine name based on the index.
-func (m *openshiftMachineProvider) getMachineName(index int32) (string, error) {
+func (m *openshiftMachineProvider) getMachineName(machineNamePrefix string, index int32) (string, error) {
+	if len(machineNamePrefix) > 0 {
+		return fmt.Sprintf("%s-%s-%d", machineNamePrefix, rand.String(5), index), nil
+	}
+
 	clusterID, ok := m.machineTemplate.ObjectMeta.Labels[machinev1beta1.MachineClusterIDLabel]
 	if !ok {
 		return "", errMissingClusterIDLabel

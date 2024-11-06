@@ -1869,6 +1869,34 @@ var _ = Describe("MachineProvider", func() {
 				})
 			})
 
+			Context("if prefix is present", func() {
+				BeforeEach(func() {
+					p, ok := provider.(*openshiftMachineProvider)
+					Expect(ok).To(BeTrue())
+
+					p.machineNamePrefix = "ckyal-prefix"
+
+					Expect(provider.CreateMachine(ctx, logger.Logger(), 0)).To(Succeed())
+				})
+
+				It("machine is created with a name in the correct format", func() {
+					nameMatcher := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-%d", "ckyal-prefix", 0))
+
+					machineList := &machinev1beta1.MachineList{}
+					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", ContainElement(
+						HaveField("ObjectMeta.Name", nameMatcher),
+					)))
+
+					// TODO not required
+					for _, m := range machineList.Items {
+						if ok, err := nameMatcher.Match(m.Name); err == nil && ok {
+							fmt.Println("@chirag: machine name", m.Name)
+							break
+						}
+					}
+				})
+			})
+
 			Context("if the Machine template is missing the machine role label", func() {
 				var err error
 
