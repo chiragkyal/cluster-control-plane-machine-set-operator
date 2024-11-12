@@ -101,7 +101,7 @@ var (
 )
 
 // NewMachineProvider creates a new OpenShift Machine v1beta1 machine provider implementation.
-func NewMachineProvider(ctx context.Context, logger logr.Logger, cl client.Client, recorder record.EventRecorder, cpms *machinev1.ControlPlaneMachineSet) (machineproviders.MachineProvider, error) {
+func NewMachineProvider(ctx context.Context, logger logr.Logger, cl client.Client, recorder record.EventRecorder, cpms *machinev1.ControlPlaneMachineSet, opts OpenshiftMachineProviderOptions) (machineproviders.MachineProvider, error) {
 	if cpms.Spec.Template.MachineType != machinev1.OpenShiftMachineV1Beta1MachineType {
 		return nil, fmt.Errorf("%w: %s", errUnexpectedMachineType, cpms.Spec.Template.MachineType)
 	}
@@ -142,18 +142,19 @@ func NewMachineProvider(ctx context.Context, logger logr.Logger, cl client.Clien
 	}
 
 	o := &openshiftMachineProvider{
-		client:            cl,
-		failureDomains:    failureDomains,
-		machineSelector:   selector,
-		machineTemplate:   *cpms.Spec.Template.OpenShiftMachineV1Beta1Machine,
-		ownerMetadata:     cpms.ObjectMeta,
-		providerConfig:    providerConfig,
-		replicas:          replicas,
-		machineNamePrefix: cpms.Spec.MachineNamePrefix,
-		namespace:         cpms.Namespace,
-		machineAPIScheme:  machineAPIScheme,
-		recorder:          recorder,
-		infrastructure:    infrastructure,
+		client:                 cl,
+		failureDomains:         failureDomains,
+		machineSelector:        selector,
+		machineTemplate:        *cpms.Spec.Template.OpenShiftMachineV1Beta1Machine,
+		ownerMetadata:          cpms.ObjectMeta,
+		providerConfig:         providerConfig,
+		replicas:               replicas,
+		machineNamePrefix:      cpms.Spec.MachineNamePrefix,
+		allowMachineNamePrefix: opts.AllowMachineNamePrefix,
+		namespace:              cpms.Namespace,
+		machineAPIScheme:       machineAPIScheme,
+		recorder:               recorder,
+		infrastructure:         infrastructure,
 	}
 
 	if err := o.updateMachineCache(ctx, logger); err != nil {
@@ -203,6 +204,8 @@ type openshiftMachineProvider struct {
 
 	machineNamePrefix string
 
+	allowMachineNamePrefix bool
+
 	// namespace store the namespace where new machines will be created.
 	namespace string
 
@@ -214,6 +217,10 @@ type openshiftMachineProvider struct {
 
 	// infrastructure contains failure domain information for some platforms.
 	infrastructure *v1.Infrastructure
+}
+
+type OpenshiftMachineProviderOptions struct {
+	AllowMachineNamePrefix bool
 }
 
 // updateMachineCache fetches the current list of Machines and calculates from these the appropriate index
@@ -567,7 +574,7 @@ func isNodeNotReadyWithinNodeGracePeriod(node *corev1.Node) bool {
 // CreateMachine creates a new Machine from the template provider config based on the
 // failure domain index provided.
 func (m *openshiftMachineProvider) CreateMachine(ctx context.Context, logger logr.Logger, index int32) error {
-	machineName, err := m.getMachineName(m.machineNamePrefix, index)
+	machineName, err := m.getMachineName(index)
 	if err != nil {
 		return fmt.Errorf("could not generate machine name: %w", err)
 	}
@@ -627,9 +634,9 @@ func (m *openshiftMachineProvider) CreateMachine(ctx context.Context, logger log
 }
 
 // getMachineName generates a machine name based on the index.
-func (m *openshiftMachineProvider) getMachineName(machineNamePrefix string, index int32) (string, error) {
-	if len(machineNamePrefix) > 0 {
-		return fmt.Sprintf("%s-%s-%d", machineNamePrefix, rand.String(5), index), nil
+func (m *openshiftMachineProvider) getMachineName(index int32) (string, error) {
+	if m.allowMachineNamePrefix && len(m.machineNamePrefix) > 0 {
+		return fmt.Sprintf("%s-%s-%d", m.machineNamePrefix, rand.String(5), index), nil
 	}
 
 	clusterID, ok := m.machineTemplate.ObjectMeta.Labels[machinev1beta1.MachineClusterIDLabel]

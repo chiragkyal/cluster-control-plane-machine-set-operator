@@ -18,6 +18,7 @@ package controlplanemachineset
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/openshift/cluster-control-plane-machine-set-operator/pkg/util"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -99,6 +101,12 @@ var _ = BeforeSuite(func() {
 	testRESTMapper, err = apiutil.NewDynamicRESTMapper(cfg, httpClient)
 	Expect(err).NotTo(HaveOccurred())
 
+	// Setting a fake version to allow for feature gate / cluster version resolution.
+	Expect(os.Setenv("RELEASE_VERSION", "4.14.0")).To(Succeed())
+
+	createClusterVersion()
+	createFeatureGate()
+
 	komega.SetClient(k8sClient)
 	komega.SetContext(ctx)
 })
@@ -108,3 +116,62 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// Helper method to create the ClusterVersion "version" resource.
+func createClusterVersion() {
+	clusterVersion := &configv1.ClusterVersion{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "version",
+		},
+		Spec: configv1.ClusterVersionSpec{
+			Channel:   "stable-4.14",
+			ClusterID: configv1.ClusterID("086c77e9-ce27-4fa4-8caa-10ebf8237d53"),
+		},
+		Status: configv1.ClusterVersionStatus{
+			Desired: configv1.Release{
+				Image:   "blah",
+				URL:     "blah",
+				Version: "4.14.0",
+			},
+		},
+	}
+	cvStatus := clusterVersion.Status.DeepCopy()
+	Expect(k8sClient.Create(ctx, clusterVersion)).To(Succeed())
+	clusterVersion.Status = *cvStatus
+	Expect(k8sClient.Status().Update(ctx, clusterVersion)).To(Succeed())
+}
+
+// Helper method to crate the FeatureGate "cluster" resource.
+func createFeatureGate() {
+	featureGate := &configv1.FeatureGate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster",
+		},
+		Spec: configv1.FeatureGateSpec{
+			FeatureGateSelection: configv1.FeatureGateSelection{
+				FeatureSet: configv1.FeatureSet("TechPreviewNoUpgrade"),
+			},
+		},
+		Status: configv1.FeatureGateStatus{
+			FeatureGates: []configv1.FeatureGateDetails{
+				{
+					Enabled: []configv1.FeatureGateAttributes{
+						{
+							Name: "foo",
+						},
+					},
+					Disabled: []configv1.FeatureGateAttributes{
+						{
+							Name: "CMPSMachineNamePrefix",
+						},
+					},
+					Version: "4.14.0",
+				},
+			},
+		},
+	}
+	fgStatus := featureGate.Status.DeepCopy()
+	Expect(k8sClient.Create(ctx, featureGate)).To(Succeed())
+	featureGate.Status = *fgStatus
+	Expect(k8sClient.Status().Update(ctx, featureGate)).To(Succeed())
+}
