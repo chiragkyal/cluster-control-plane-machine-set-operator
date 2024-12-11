@@ -35,10 +35,10 @@ import (
 	metav1resourcebuilder "github.com/openshift/cluster-api-actuator-pkg/testutils/resourcebuilder/meta/v1"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/pkg/machineproviders"
 	machineprovidersresourcebuilder "github.com/openshift/cluster-control-plane-machine-set-operator/pkg/test/resourcebuilder/machineproviders"
-	"github.com/openshift/cluster-control-plane-machine-set-operator/pkg/util"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/e2e/framework"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/e2e/helpers"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/integration"
+	"github.com/openshift/library-go/pkg/operator/configobserver/featuregates"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -183,16 +183,15 @@ var _ = Describe("With a running controller", func() {
 		})
 		Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
-		By("Setting up a featureGateAccessor")
-		featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
-		Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
-
 		reconciler := &ControlPlaneMachineSetReconciler{
-			Client:              mgr.GetClient(),
-			UncachedClient:      mgr.GetClient(),
-			Namespace:           namespaceName,
-			OperatorName:        operatorName,
-			FeatureGateAccessor: featureGateAccessor,
+			Client:         mgr.GetClient(),
+			UncachedClient: mgr.GetClient(),
+			Namespace:      namespaceName,
+			OperatorName:   operatorName,
+			FeatureGateAccessor: featuregates.NewHardcodedFeatureGateAccess(
+				[]configv1.FeatureGateName{"CPMSMachineNamePrefix"}, // enabled
+				[]configv1.FeatureGateName{},                        // disabled
+			),
 		}
 		Expect(reconciler.SetupWithManager(mgr)).To(Succeed(), "Reconciler should be able to setup with manager")
 
