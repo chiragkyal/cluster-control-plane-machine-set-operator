@@ -35,10 +35,12 @@ import (
 	metav1resourcebuilder "github.com/openshift/cluster-api-actuator-pkg/testutils/resourcebuilder/meta/v1"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/pkg/machineproviders"
 	machineprovidersresourcebuilder "github.com/openshift/cluster-control-plane-machine-set-operator/pkg/test/resourcebuilder/machineproviders"
+	"github.com/openshift/cluster-control-plane-machine-set-operator/pkg/util"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/e2e/framework"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/e2e/helpers"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/integration"
-	"github.com/openshift/library-go/pkg/operator/configobserver/featuregates"
+
+	// "github.com/openshift/library-go/pkg/operator/configobserver/featuregates"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,18 +56,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
-var _ = Describe("With a running controller", func() {
-	var mgrCancel context.CancelFunc
-	var mgrDone chan struct{}
-	var mgr ctrl.Manager
+const (
+	operatorName = "control-plane-machine-set"
+)
 
-	var namespaceName string
-
-	const operatorName = "control-plane-machine-set"
-
-	var co *configv1.ClusterOperator
-
-	usEast1aSubnet := machinev1beta1.AWSResourceReference{
+var (
+	usEast1aSubnet = machinev1beta1.AWSResourceReference{
 		Filters: []machinev1beta1.Filter{
 			{
 				Name: "tag:Name",
@@ -76,7 +72,7 @@ var _ = Describe("With a running controller", func() {
 		},
 	}
 
-	usEast1bSubnet := machinev1beta1.AWSResourceReference{
+	usEast1bSubnet = machinev1beta1.AWSResourceReference{
 		Filters: []machinev1beta1.Filter{
 			{
 				Name: "tag:Name",
@@ -87,7 +83,7 @@ var _ = Describe("With a running controller", func() {
 		},
 	}
 
-	usEast1cSubnet := machinev1beta1.AWSResourceReference{
+	usEast1cSubnet = machinev1beta1.AWSResourceReference{
 		Filters: []machinev1beta1.Filter{
 			{
 				Name: "tag:Name",
@@ -98,21 +94,21 @@ var _ = Describe("With a running controller", func() {
 		},
 	}
 
-	usEast1aProviderSpecBuilder := machinev1beta1resourcebuilder.AWSProviderSpec().
-		WithAvailabilityZone("us-east-1a").
-		WithSubnet(usEast1aSubnet)
+	usEast1aProviderSpecBuilder = machinev1beta1resourcebuilder.AWSProviderSpec().
+					WithAvailabilityZone("us-east-1a").
+					WithSubnet(usEast1aSubnet)
 
-	usEast1bProviderSpecBuilder := machinev1beta1resourcebuilder.AWSProviderSpec().
-		WithAvailabilityZone("us-east-1b").
-		WithSubnet(usEast1bSubnet)
+	usEast1bProviderSpecBuilder = machinev1beta1resourcebuilder.AWSProviderSpec().
+					WithAvailabilityZone("us-east-1b").
+					WithSubnet(usEast1bSubnet)
 
-	usEast1cProviderSpecBuilder := machinev1beta1resourcebuilder.AWSProviderSpec().
-		WithAvailabilityZone("us-east-1c").
-		WithSubnet(usEast1cSubnet)
+	usEast1cProviderSpecBuilder = machinev1beta1resourcebuilder.AWSProviderSpec().
+					WithAvailabilityZone("us-east-1c").
+					WithSubnet(usEast1cSubnet)
 
-	usEast1aFailureDomainBuilder := machinev1resourcebuilder.AWSFailureDomain().
-		WithAvailabilityZone("us-east-1a").
-		WithSubnet(machinev1.AWSResourceReference{
+	usEast1aFailureDomainBuilder = machinev1resourcebuilder.AWSFailureDomain().
+					WithAvailabilityZone("us-east-1a").
+					WithSubnet(machinev1.AWSResourceReference{
 			Type: machinev1.AWSFiltersReferenceType,
 			Filters: &[]machinev1.AWSResourceFilter{
 				{
@@ -122,9 +118,9 @@ var _ = Describe("With a running controller", func() {
 			},
 		})
 
-	usEast1bFailureDomainBuilder := machinev1resourcebuilder.AWSFailureDomain().
-		WithAvailabilityZone("us-east-1b").
-		WithSubnet(machinev1.AWSResourceReference{
+	usEast1bFailureDomainBuilder = machinev1resourcebuilder.AWSFailureDomain().
+					WithAvailabilityZone("us-east-1b").
+					WithSubnet(machinev1.AWSResourceReference{
 			Type: machinev1.AWSFiltersReferenceType,
 			Filters: &[]machinev1.AWSResourceFilter{
 				{
@@ -134,9 +130,9 @@ var _ = Describe("With a running controller", func() {
 			},
 		})
 
-	usEast1cFailureDomainBuilder := machinev1resourcebuilder.AWSFailureDomain().
-		WithAvailabilityZone("us-east-1c").
-		WithSubnet(machinev1.AWSResourceReference{
+	usEast1cFailureDomainBuilder = machinev1resourcebuilder.AWSFailureDomain().
+					WithAvailabilityZone("us-east-1c").
+					WithSubnet(machinev1.AWSResourceReference{
 			Type: machinev1.AWSFiltersReferenceType,
 			Filters: &[]machinev1.AWSResourceFilter{
 				{
@@ -146,18 +142,28 @@ var _ = Describe("With a running controller", func() {
 			},
 		})
 
-	tmplBuilder := machinev1resourcebuilder.OpenShiftMachineV1Beta1Template().
-		WithFailureDomainsBuilder(machinev1resourcebuilder.AWSFailureDomains().WithFailureDomainBuilders(
+	tmplBuilder = machinev1resourcebuilder.OpenShiftMachineV1Beta1Template().
+			WithFailureDomainsBuilder(machinev1resourcebuilder.AWSFailureDomains().WithFailureDomainBuilders(
 			usEast1aFailureDomainBuilder,
 			usEast1bFailureDomainBuilder,
 			usEast1cFailureDomainBuilder,
 		)).
 		WithProviderSpecBuilder(machinev1beta1resourcebuilder.AWSProviderSpec())
 
-	masterNodeBuilder := corev1resourcebuilder.Node().AsMaster()
+	masterNodeBuilder = corev1resourcebuilder.Node().AsMaster()
 
 	// Running phase for setting machines to running.
-	running := "Running"
+	running = "Running"
+)
+
+var _ = Describe("With a running controller", func() {
+	var mgrCancel context.CancelFunc
+	var mgrDone chan struct{}
+	var mgr ctrl.Manager
+
+	var namespaceName string
+
+	var co *configv1.ClusterOperator
 
 	BeforeEach(func() {
 		By("Setting up a namespace for the test")
@@ -183,15 +189,20 @@ var _ = Describe("With a running controller", func() {
 		})
 		Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
+		By("Setting up a featureGateAccessor")
+		featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+		Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
+
 		reconciler := &ControlPlaneMachineSetReconciler{
 			Client:         mgr.GetClient(),
 			UncachedClient: mgr.GetClient(),
 			Namespace:      namespaceName,
 			OperatorName:   operatorName,
-			FeatureGateAccessor: featuregates.NewHardcodedFeatureGateAccess(
-				[]configv1.FeatureGateName{"CPMSMachineNamePrefix"}, // enabled
-				[]configv1.FeatureGateName{},                        // disabled
-			),
+			// FeatureGateAccessor: featuregates.NewHardcodedFeatureGateAccess(
+			// 	[]configv1.FeatureGateName{"CPMSMachineNamePrefix"}, // enabled
+			// 	[]configv1.FeatureGateName{},                        // disabled
+			// ),
+			FeatureGateAccessor: featureGateAccessor,
 		}
 		Expect(reconciler.SetupWithManager(mgr)).To(Succeed(), "Reconciler should be able to setup with manager")
 
@@ -1068,6 +1079,7 @@ var _ = Describe("With a running controller", func() {
 
 	Context("with updated machines", func() {
 		var cpms *machinev1.ControlPlaneMachineSet
+		prefix := "ckyal-prefix"
 
 		BeforeEach(func() {
 			By("Creating Machines owned by the ControlPlaneMachineSet")
@@ -1115,6 +1127,7 @@ var _ = Describe("With a running controller", func() {
 			// The default CPMS should be sufficient for this test.
 			By("Creating the ControlPlaneMachineSet")
 			cpms = machinev1resourcebuilder.ControlPlaneMachineSet().WithNamespace(namespaceName).WithMachineTemplateBuilder(tmplBuilder).Build()
+			cpms.Spec.MachineNamePrefix = prefix
 			Expect(k8sClient.Create(ctx, cpms)).Should(Succeed())
 
 			By("Waiting for the ControlPlaneMachineSet to report a stable status")
@@ -1165,6 +1178,36 @@ var _ = Describe("With a running controller", func() {
 
 			It("should create a replacement machine for the correct index", func() {
 				helpers.EventuallyIndexIsBeingReplaced(ctx, testFramework, index)
+			})
+
+			It("creates machines with and without the prefixed name", func() {
+				nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-%d", prefix, index)) // For the prefixed machine
+
+				nameWithoutPrefix1 := "master-0" // Index 0 should follow old name
+				nameWithoutPrefix2 := "master-2" // Index 2 should follow old name
+
+				By("Checking creates machines with and without the prefixed name")
+
+				machineList := &machinev1beta1.MachineList{}
+				Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", HaveLen(3))) // Should have 3 machines
+
+				Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+					SatisfyAll(
+						ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
+						ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix1))),
+						ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix2))),
+					),
+				))
+			})
+
+			It("should update the status", func() {
+				Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("ObservedGeneration", Equal(int64(1))),
+					HaveField("Replicas", Equal(int32(3))),
+					HaveField("ReadyReplicas", Equal(int32(3))),
+					HaveField("UpdatedReplicas", Equal(int32(3))),
+					HaveField("UnavailableReplicas", Equal(int32(0))),
+				)))
 			})
 		})
 	})
@@ -1419,6 +1462,321 @@ var _ = Describe("With a running controller", func() {
 				HaveEach(HaveField("ObjectMeta.OwnerReferences", HaveLen(0))),
 			)), "each machine should have no owner references")
 		})
+	})
+})
+
+var _ = Describe("With a running controller and machine name prefix", func() {
+
+	Context("When feature gate is disabled", func() {
+
+		var mgrCancel context.CancelFunc
+		var mgrDone chan struct{}
+		var mgr ctrl.Manager
+
+		var namespaceName string
+
+		var co *configv1.ClusterOperator
+
+		BeforeEach(func() {
+			By("Setting up a namespace for the test")
+			ns := corev1resourcebuilder.Namespace().WithGenerateName("control-plane-machine-set-controller-").Build()
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			namespaceName = ns.GetName()
+
+			By("Setting up a manager and controller")
+			var err error
+			mgr, err = ctrl.NewManager(cfg, ctrl.Options{
+				Scheme: testScheme,
+				Metrics: server.Options{
+					BindAddress: "0",
+				},
+				WebhookServer: webhook.NewServer(webhook.Options{
+					Port:    testEnv.WebhookInstallOptions.LocalServingPort,
+					Host:    testEnv.WebhookInstallOptions.LocalServingHost,
+					CertDir: testEnv.WebhookInstallOptions.LocalServingCertDir,
+				}),
+				Controller: config.Controller{
+					SkipNameValidation: ptr.To(true),
+				},
+			})
+			Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
+
+			reCreateFeatureGate(releaseVersion,
+				[]configv1.FeatureGateAttributes{}, // enabled
+				[]configv1.FeatureGateAttributes{ // disabled
+					{
+						Name: "CPMSMachineNamePrefix",
+					},
+				},
+			)
+
+			By("Setting up a featureGateAccessor")
+			featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+			Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
+
+			reconciler := &ControlPlaneMachineSetReconciler{
+				Client:              mgr.GetClient(),
+				UncachedClient:      mgr.GetClient(),
+				Namespace:           namespaceName,
+				OperatorName:        operatorName,
+				FeatureGateAccessor: featureGateAccessor,
+			}
+			Expect(reconciler.SetupWithManager(mgr)).To(Succeed(), "Reconciler should be able to setup with manager")
+
+			By("Starting the manager")
+			var mgrCtx context.Context
+			mgrCtx, mgrCancel = context.WithCancel(context.Background())
+			mgrDone = make(chan struct{})
+
+			go func() {
+				defer GinkgoRecover()
+				defer close(mgrDone)
+
+				Expect(mgr.Start(mgrCtx)).To(Succeed())
+			}()
+
+			// CVO will create a blank cluster operator for us before the operator starts.
+			co = configv1resourcebuilder.ClusterOperator().WithName(operatorName).Build()
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("Stopping the manager")
+			mgrCancel()
+			// Wait for the mgrDone to be closed, which will happen once the mgr has stopped
+			<-mgrDone
+
+			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
+				&corev1.Node{},
+				&configv1.ClusterOperator{},
+				&machinev1beta1.Machine{},
+				&machinev1.ControlPlaneMachineSet{},
+			)
+		})
+	})
+
+	Context("When feature gate is enabled", func() {
+
+		var mgrCancel context.CancelFunc
+		var mgrDone chan struct{}
+		var mgr ctrl.Manager
+
+		var namespaceName string
+
+		var co *configv1.ClusterOperator
+
+		BeforeEach(func() {
+			By("Setting up a namespace for the test")
+			ns := corev1resourcebuilder.Namespace().WithGenerateName("control-plane-machine-set-controller-").Build()
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+			namespaceName = ns.GetName()
+
+			By("Setting up a manager and controller")
+			var err error
+			mgr, err = ctrl.NewManager(cfg, ctrl.Options{
+				Scheme: testScheme,
+				Metrics: server.Options{
+					BindAddress: "0",
+				},
+				WebhookServer: webhook.NewServer(webhook.Options{
+					Port:    testEnv.WebhookInstallOptions.LocalServingPort,
+					Host:    testEnv.WebhookInstallOptions.LocalServingHost,
+					CertDir: testEnv.WebhookInstallOptions.LocalServingCertDir,
+				}),
+				Controller: config.Controller{
+					SkipNameValidation: ptr.To(true),
+				},
+			})
+			Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
+
+			reCreateFeatureGate(releaseVersion,
+				[]configv1.FeatureGateAttributes{ // enabled
+					{
+						Name: "CPMSMachineNamePrefix",
+					},
+				},
+				[]configv1.FeatureGateAttributes{}, // disabled
+			)
+
+			By("Setting up a featureGateAccessor")
+			featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+			Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
+
+			reconciler := &ControlPlaneMachineSetReconciler{
+				Client:              mgr.GetClient(),
+				UncachedClient:      mgr.GetClient(),
+				Namespace:           namespaceName,
+				OperatorName:        operatorName,
+				FeatureGateAccessor: featureGateAccessor,
+			}
+			Expect(reconciler.SetupWithManager(mgr)).To(Succeed(), "Reconciler should be able to setup with manager")
+
+			By("Starting the manager")
+			var mgrCtx context.Context
+			mgrCtx, mgrCancel = context.WithCancel(context.Background())
+			mgrDone = make(chan struct{})
+
+			go func() {
+				defer GinkgoRecover()
+				defer close(mgrDone)
+
+				Expect(mgr.Start(mgrCtx)).To(Succeed())
+			}()
+
+			// CVO will create a blank cluster operator for us before the operator starts.
+			co = configv1resourcebuilder.ClusterOperator().WithName(operatorName).Build()
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("Stopping the manager")
+			mgrCancel()
+			// Wait for the mgrDone to be closed, which will happen once the mgr has stopped
+			<-mgrDone
+
+			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
+				&corev1.Node{},
+				&configv1.ClusterOperator{},
+				&machinev1beta1.Machine{},
+				&machinev1.ControlPlaneMachineSet{},
+			)
+		})
+
+		Context("with updated machines", func() {
+			var cpms *machinev1.ControlPlaneMachineSet
+			prefix := "ckyal-prefix"
+
+			BeforeEach(func() {
+				By("Creating Machines owned by the ControlPlaneMachineSet")
+				machineBuilder := machinev1beta1resourcebuilder.Machine().AsMaster().WithNamespace(namespaceName)
+
+				machines := map[int]machinev1beta1resourcebuilder.MachineBuilder{
+					0: machineBuilder.WithProviderSpecBuilder(usEast1aProviderSpecBuilder),
+					1: machineBuilder.WithProviderSpecBuilder(usEast1bProviderSpecBuilder),
+					2: machineBuilder.WithProviderSpecBuilder(usEast1cProviderSpecBuilder),
+				}
+
+				for i := range machines {
+					nodeName := fmt.Sprintf("node-%d", i)
+					machineName := fmt.Sprintf("master-%d", i)
+
+					machine := machines[i].WithName(machineName).Build()
+
+					Expect(k8sClient.Create(ctx, machine)).To(Succeed())
+					Expect(k8sClient.Create(ctx, masterNodeBuilder.WithName(nodeName).AsReady().Build())).To(Succeed())
+
+					Eventually(komega.UpdateStatus(machine, func() {
+						machine.Status.NodeRef = &corev1.ObjectReference{Name: nodeName}
+					})).Should(Succeed())
+				}
+
+				By("Registering the integration machine manager")
+
+				// The machine manager is a dummy implementation that moves machines from zero, through the expected
+				// phases and then eventually to the Running phase.
+				// This allows the CPMS to react to the changes in the machine status and run through its own logic.
+				// We use it here so that we can simulate a full rolling replacement of the control plane which needs
+				// machines to be able to move through the phases to the Running phase.
+
+				machineManager := integration.NewIntegrationMachineManager(integration.MachineManagerOptions{
+					ActionDelay: 500 * time.Millisecond,
+				})
+				Expect(machineManager.SetupWithManager(mgr)).To(Succeed())
+
+				// Wait for the machines to all report running before creating the CPMS.
+				By("Waiting for the machines to become ready")
+				Eventually(komega.ObjectList(&machinev1beta1.MachineList{}), 2*time.Second).Should(HaveField("Items", HaveEach(
+					HaveField("Status.Phase", HaveValue(Equal("Running"))),
+				)))
+
+				// The default CPMS should be sufficient for this test.
+				By("Creating the ControlPlaneMachineSet")
+				cpms = machinev1resourcebuilder.ControlPlaneMachineSet().WithNamespace(namespaceName).WithMachineTemplateBuilder(tmplBuilder).Build()
+				cpms.Spec.MachineNamePrefix = prefix
+				Expect(k8sClient.Create(ctx, cpms)).Should(Succeed())
+
+				By("Waiting for the ControlPlaneMachineSet to report a stable status")
+				Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("Replicas", Equal(int32(3))),
+					HaveField("UpdatedReplicas", Equal(int32(3))),
+					HaveField("ReadyReplicas", Equal(int32(3))),
+					HaveField("UnavailableReplicas", Equal(int32(0))),
+				)))
+			})
+
+			Context("and the instance size is changed", func() {
+				var testOptions helpers.RollingUpdatePeriodicTestOptions
+
+				BeforeEach(func() {
+					// The CPMS is configured for AWS so use the AWS Platform Type.
+					testFramework := framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
+
+					helpers.IncreaseControlPlaneMachineSetInstanceSize(testFramework, 10*time.Second, 1*time.Second)
+
+					testOptions.TestFramework = testFramework
+
+					testOptions.RolloutTimeout = 10 * time.Second
+					testOptions.StabilisationTimeout = 1 * time.Second
+					testOptions.StabilisationMinimumAvailability = 500 * time.Millisecond
+				})
+
+				helpers.ItShouldPerformARollingUpdate(&testOptions)
+			})
+
+			Context("and a machine is deleted", func() {
+				index := 1
+				var testFramework framework.Framework
+
+				BeforeEach(func() {
+					// The CPMS is configured for AWS so use the AWS Platform Type.
+					testFramework = framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
+
+					machine := &machinev1beta1.Machine{}
+					machineName := fmt.Sprintf("master-%d", index)
+					machineKey := client.ObjectKey{Namespace: namespaceName, Name: machineName}
+
+					By(fmt.Sprintf("Deleting machine in index %d", index))
+
+					Expect(k8sClient.Get(ctx, machineKey, machine)).To(Succeed())
+					Expect(k8sClient.Delete(ctx, machine)).Should(Succeed())
+				})
+
+				It("should create a replacement machine for the correct index", func() {
+					helpers.EventuallyIndexIsBeingReplaced(ctx, testFramework, index)
+				})
+
+				It("creates machines with and without the prefixed name", func() {
+					nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-%d", prefix, index)) // For the prefixed machine
+
+					nameWithoutPrefix1 := "master-0" // Index 0 should follow old name
+					nameWithoutPrefix2 := "master-2" // Index 2 should follow old name
+
+					By("Checking creates machines with and without the prefixed name")
+
+					machineList := &machinev1beta1.MachineList{}
+					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", HaveLen(3))) // Should have 3 machines
+
+					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+						SatisfyAll(
+							ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
+							ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix1))),
+							ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix2))),
+						),
+					))
+				})
+
+				It("should update the status", func() {
+					Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+						HaveField("ObservedGeneration", Equal(int64(1))),
+						HaveField("Replicas", Equal(int32(3))),
+						HaveField("ReadyReplicas", Equal(int32(3))),
+						HaveField("UpdatedReplicas", Equal(int32(3))),
+						HaveField("UnavailableReplicas", Equal(int32(0))),
+					)))
+				})
+			})
+		})
+
 	})
 })
 
