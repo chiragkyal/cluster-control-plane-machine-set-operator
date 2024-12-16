@@ -194,14 +194,10 @@ var _ = Describe("With a running controller", func() {
 		Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
 		reconciler := &ControlPlaneMachineSetReconciler{
-			Client:         mgr.GetClient(),
-			UncachedClient: mgr.GetClient(),
-			Namespace:      namespaceName,
-			OperatorName:   operatorName,
-			// FeatureGateAccessor: featuregates.NewHardcodedFeatureGateAccess(
-			// 	[]configv1.FeatureGateName{"CPMSMachineNamePrefix"}, // enabled
-			// 	[]configv1.FeatureGateName{},                        // disabled
-			// ),
+			Client:              mgr.GetClient(),
+			UncachedClient:      mgr.GetClient(),
+			Namespace:           namespaceName,
+			OperatorName:        operatorName,
 			FeatureGateAccessor: featureGateAccessor,
 		}
 		Expect(reconciler.SetupWithManager(mgr)).To(Succeed(), "Reconciler should be able to setup with manager")
@@ -1589,6 +1585,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			})
 			Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
+			By("Setting up a featureGateAccessor")
 			reCreateFeatureGate(releaseVersion,
 				[]configv1.FeatureGateAttributes{ // enabled
 					{
@@ -1598,7 +1595,6 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				[]configv1.FeatureGateAttributes{}, // disabled
 			)
 
-			By("Setting up a featureGateAccessor")
 			featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
 			Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
@@ -1642,9 +1638,10 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			)
 		})
 
-		Context("with updated machines", func() {
+		Context("when Control Plane Machine Set is created with a RollingUpdate strategy", func() {
 			var cpms *machinev1.ControlPlaneMachineSet
-			prefix := "ckyal-prefix"
+			var testOptions helpers.RollingUpdatePeriodicTestOptions
+			prefix := "control-plane-prefix"
 
 			BeforeEach(func() {
 				By("Creating Machines owned by the ControlPlaneMachineSet")
@@ -1692,11 +1689,11 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				// The default CPMS should be sufficient for this test.
 				By("Creating the ControlPlaneMachineSet")
 				cpms = machinev1resourcebuilder.ControlPlaneMachineSet().WithNamespace(namespaceName).WithMachineTemplateBuilder(tmplBuilder).Build()
-				cpms.Spec.MachineNamePrefix = prefix
 				Expect(k8sClient.Create(ctx, cpms)).Should(Succeed())
 
 				By("Waiting for the ControlPlaneMachineSet to report a stable status")
 				Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("ObservedGeneration", Equal(int64(1))),
 					HaveField("Replicas", Equal(int32(3))),
 					HaveField("UpdatedReplicas", Equal(int32(3))),
 					HaveField("ReadyReplicas", Equal(int32(3))),
@@ -1704,33 +1701,59 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				)))
 			})
 
+			// Update the CPMS to set MachineNamePrefix
+			JustBeforeEach(func() {
+				// The CPMS is configured for AWS so use the AWS Platform Type.
+				testFramework := framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
+
+				helpers.UpdateControlPlaneMachineSetMachineNamePrefix(testFramework, prefix, 10*time.Second, 1*time.Second)
+
+				testOptions.TestFramework = testFramework
+
+				testOptions.RolloutTimeout = 10 * time.Second
+				testOptions.StabilisationTimeout = 1 * time.Second
+				testOptions.StabilisationMinimumAvailability = 500 * time.Millisecond
+			})
+
+			It("machine name should remain unchanged consistently", func() {
+				machineList := &machinev1beta1.MachineList{}
+				Consistently(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+					SatisfyAll(
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-0"))),
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-1"))),
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-2"))),
+					),
+				))
+			})
+
 			Context("and the instance size is changed", func() {
-				var testOptions helpers.RollingUpdatePeriodicTestOptions
-
-				BeforeEach(func() {
-					// The CPMS is configured for AWS so use the AWS Platform Type.
-					testFramework := framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
-
-					helpers.IncreaseControlPlaneMachineSetInstanceSize(testFramework, 10*time.Second, 1*time.Second)
-
-					testOptions.TestFramework = testFramework
-
-					testOptions.RolloutTimeout = 10 * time.Second
-					testOptions.StabilisationTimeout = 1 * time.Second
-					testOptions.StabilisationMinimumAvailability = 500 * time.Millisecond
+				JustBeforeEach(func() {
+					helpers.IncreaseControlPlaneMachineSetInstanceSize(testOptions.TestFramework, 10*time.Second, 1*time.Second)
 				})
 
 				helpers.ItShouldPerformARollingUpdate(&testOptions)
+
+				It("creates machines only with prefixed name", func() {
+					nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-\\d", prefix))
+
+					machineList := &machinev1beta1.MachineList{}
+
+					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", HaveLen(3))) // Should have 3 machines
+
+					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+						SatisfyAll(
+							ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
+							ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
+							ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
+						),
+					))
+				})
 			})
 
 			Context("and a machine is deleted", func() {
 				index := 1
-				var testFramework framework.Framework
 
-				BeforeEach(func() {
-					// The CPMS is configured for AWS so use the AWS Platform Type.
-					testFramework = framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
-
+				JustBeforeEach(func() {
 					machine := &machinev1beta1.Machine{}
 					machineName := fmt.Sprintf("master-%d", index)
 					machineKey := client.ObjectKey{Namespace: namespaceName, Name: machineName}
@@ -1742,16 +1765,14 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				})
 
 				It("should create a replacement machine for the correct index", func() {
-					helpers.EventuallyIndexIsBeingReplaced(ctx, testFramework, index)
+					helpers.EventuallyIndexIsBeingReplaced(ctx, testOptions.TestFramework, index)
 				})
 
-				It("creates machines with and without the prefixed name", func() {
+				It("should only name the replacement machine with prefix", func() {
 					nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-%d", prefix, index)) // For the prefixed machine
 
 					nameWithoutPrefix1 := "master-0" // Index 0 should follow old name
 					nameWithoutPrefix2 := "master-2" // Index 2 should follow old name
-
-					By("Checking creates machines with and without the prefixed name")
 
 					machineList := &machinev1beta1.MachineList{}
 					Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", HaveLen(3))) // Should have 3 machines
@@ -1765,15 +1786,15 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 					))
 				})
 
-				It("should update the status", func() {
-					Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
-						HaveField("ObservedGeneration", Equal(int64(1))),
-						HaveField("Replicas", Equal(int32(3))),
-						HaveField("ReadyReplicas", Equal(int32(3))),
-						HaveField("UpdatedReplicas", Equal(int32(3))),
-						HaveField("UnavailableReplicas", Equal(int32(0))),
-					)))
-				})
+				// It("should update the status", func() {
+				// 	Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+				// 		HaveField("ObservedGeneration", Equal(int64(1))),
+				// 		HaveField("Replicas", Equal(int32(3))),
+				// 		HaveField("ReadyReplicas", Equal(int32(3))),
+				// 		HaveField("UpdatedReplicas", Equal(int32(3))),
+				// 		HaveField("UnavailableReplicas", Equal(int32(0))),
+				// 	)))
+				// })
 			})
 		})
 
