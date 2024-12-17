@@ -156,8 +156,8 @@ var (
 )
 
 var _ = Describe("With a running controller", func() {
-	var mgrCancel context.CancelFunc
-	var mgrDone chan struct{}
+	var mgrCancel, fgCancel context.CancelFunc
+	var mgrDone, fgDone chan struct{}
 	var mgr ctrl.Manager
 
 	var namespaceName string
@@ -189,7 +189,10 @@ var _ = Describe("With a running controller", func() {
 		Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
 		By("Setting up a featureGateAccessor")
-		featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+		var fgCtx context.Context
+		fgCtx, fgCancel = context.WithCancel(context.Background())
+		fgDone = make(chan struct{})
+		featureGateAccessor, err := util.SetupFeatureGateAccessor(fgCtx, mgr)
 		Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
 		reconciler := &ControlPlaneMachineSetReconciler{
@@ -209,6 +212,7 @@ var _ = Describe("With a running controller", func() {
 		go func() {
 			defer GinkgoRecover()
 			defer close(mgrDone)
+			defer close(fgDone)
 
 			Expect(mgr.Start(mgrCtx)).To(Succeed())
 		}()
@@ -223,6 +227,10 @@ var _ = Describe("With a running controller", func() {
 		mgrCancel()
 		// Wait for the mgrDone to be closed, which will happen once the mgr has stopped
 		<-mgrDone
+
+		By("Stopping the featureGateAccessor")
+		fgCancel()
+		<-fgDone
 
 		testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 			&corev1.Node{},
@@ -1431,10 +1439,10 @@ var _ = Describe("With a running controller", func() {
 
 var _ = Describe("With a running controller and machine name prefix", func() {
 
-	Context("When feature gate is disabled", func() {
+	Context("When CPMSMachineNamePrefix feature gate is disabled", func() {
 
-		var mgrCancel context.CancelFunc
-		var mgrDone chan struct{}
+		var mgrCancel, fgCancel context.CancelFunc
+		var mgrDone, fgDone chan struct{}
 		var mgr ctrl.Manager
 
 		var namespaceName string
@@ -1465,8 +1473,14 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			})
 			Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
+			By("Setting up a featureGateAccessor")
+			var fgCtx context.Context
+			fgCtx, fgCancel = context.WithCancel(context.Background())
+			fgDone = make(chan struct{})
+
 			reCreateFeatureGate(releaseVersion,
 				[]configv1.FeatureGateAttributes{}, // enabled
+
 				[]configv1.FeatureGateAttributes{ // disabled
 					{
 						Name: "CPMSMachineNamePrefix",
@@ -1474,8 +1488,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				},
 			)
 
-			By("Setting up a featureGateAccessor")
-			featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+			featureGateAccessor, err := util.SetupFeatureGateAccessor(fgCtx, mgr)
 			Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
 			reconciler := &ControlPlaneMachineSetReconciler{
@@ -1495,6 +1508,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			go func() {
 				defer GinkgoRecover()
 				defer close(mgrDone)
+				defer close(fgDone)
 
 				Expect(mgr.Start(mgrCtx)).To(Succeed())
 			}()
@@ -1510,6 +1524,10 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			// Wait for the mgrDone to be closed, which will happen once the mgr has stopped
 			<-mgrDone
 
+			By("Stopping the featureGateAccessor")
+			fgCancel()
+			<-fgDone
+
 			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 				&corev1.Node{},
 				&configv1.ClusterOperator{},
@@ -1517,12 +1535,132 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				&machinev1.ControlPlaneMachineSet{},
 			)
 		})
+
+		Context("when Control Plane Machine Set is updated to set MachineNamePrefix", func() {
+			var cpms *machinev1.ControlPlaneMachineSet
+			testOptions := helpers.RollingUpdatePeriodicTestOptions{}
+			prefix := "control-plane-prefix"
+
+			BeforeEach(func() {
+				By("Creating Machines owned by the ControlPlaneMachineSet")
+				machineBuilder := machinev1beta1resourcebuilder.Machine().AsMaster().WithNamespace(namespaceName)
+
+				machines := map[int]machinev1beta1resourcebuilder.MachineBuilder{
+					0: machineBuilder.WithProviderSpecBuilder(usEast1aProviderSpecBuilder),
+					1: machineBuilder.WithProviderSpecBuilder(usEast1bProviderSpecBuilder),
+					2: machineBuilder.WithProviderSpecBuilder(usEast1cProviderSpecBuilder),
+				}
+
+				for i := range machines {
+					nodeName := fmt.Sprintf("node-%d", i)
+					machineName := fmt.Sprintf("master-%d", i)
+
+					machine := machines[i].WithName(machineName).Build()
+
+					Expect(k8sClient.Create(ctx, machine)).To(Succeed())
+					Expect(k8sClient.Create(ctx, masterNodeBuilder.WithName(nodeName).AsReady().Build())).To(Succeed())
+
+					Eventually(komega.UpdateStatus(machine, func() {
+						machine.Status.NodeRef = &corev1.ObjectReference{Name: nodeName}
+					})).Should(Succeed())
+				}
+
+				By("Registering the integration machine manager")
+
+				// The machine manager is a dummy implementation that moves machines from zero, through the expected
+				// phases and then eventually to the Running phase.
+				// This allows the CPMS to react to the changes in the machine status and run through its own logic.
+				// We use it here so that we can simulate a full rolling replacement of the control plane which needs
+				// machines to be able to move through the phases to the Running phase.
+
+				machineManager := integration.NewIntegrationMachineManager(integration.MachineManagerOptions{
+					ActionDelay: 500 * time.Millisecond,
+				})
+				Expect(machineManager.SetupWithManager(mgr)).To(Succeed())
+
+				// Wait for the machines to all report running before creating the CPMS.
+				By("Waiting for the machines to become ready")
+				Eventually(komega.ObjectList(&machinev1beta1.MachineList{}), 2*time.Second).Should(HaveField("Items", HaveEach(
+					HaveField("Status.Phase", HaveValue(Equal("Running"))),
+				)))
+
+				// The default CPMS should be sufficient for this test.
+				By("Creating the ControlPlaneMachineSet")
+				cpms = machinev1resourcebuilder.ControlPlaneMachineSet().WithNamespace(namespaceName).WithMachineTemplateBuilder(tmplBuilder).Build()
+				Expect(k8sClient.Create(ctx, cpms)).Should(Succeed())
+
+				By("Waiting for the ControlPlaneMachineSet to report a stable status")
+				Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("ObservedGeneration", Equal(int64(1))),
+					HaveField("Replicas", Equal(int32(3))),
+					HaveField("UpdatedReplicas", Equal(int32(3))),
+					HaveField("ReadyReplicas", Equal(int32(3))),
+					HaveField("UnavailableReplicas", Equal(int32(0))),
+				)))
+			})
+
+			// Update the CPMS to set MachineNamePrefix
+			JustBeforeEach(func() {
+				// The CPMS is configured for AWS so use the AWS Platform Type.
+				testFramework := framework.NewFrameworkWith(testScheme, k8sClient, configv1.AWSPlatformType, framework.Full, namespaceName)
+
+				helpers.UpdateControlPlaneMachineSetMachineNamePrefix(testFramework, prefix, 10*time.Second, 1*time.Second)
+
+				testOptions.TestFramework = testFramework
+
+				testOptions.RolloutTimeout = 10 * time.Second
+				testOptions.StabilisationTimeout = 1 * time.Second
+				testOptions.StabilisationMinimumAvailability = 500 * time.Millisecond
+			})
+
+			It("should keep the machine names unchanged consistently", func() {
+				machineList := &machinev1beta1.MachineList{}
+				Consistently(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+					SatisfyAll(
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-0"))),
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-1"))),
+						ContainElement(HaveField("ObjectMeta.Name", Equal("master-2"))),
+					),
+				))
+			})
+
+			It("should keep the status unchanged consistently", func() {
+				Consistently(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("Replicas", Equal(int32(3))),
+					HaveField("ReadyReplicas", Equal(int32(3))),
+					HaveField("UpdatedReplicas", Equal(int32(3))),
+					HaveField("UnavailableReplicas", Equal(int32(0))),
+				)))
+			})
+
+			Context("and the instance size is changed", func() {
+				JustBeforeEach(func() {
+					helpers.IncreaseControlPlaneMachineSetInstanceSize(testOptions.TestFramework, 10*time.Second, 1*time.Second)
+				})
+
+				helpers.ItShouldPerformARollingUpdate(&testOptions)
+
+				It("should not create machines with prefixed name consistently", func() {
+					nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-\\d", prefix))
+
+					machineList := &machinev1beta1.MachineList{}
+
+					Consistently(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
+						SatisfyAll(
+							Not(ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix))),
+							Not(ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix))),
+							Not(ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix))),
+						),
+					))
+				})
+			})
+		})
 	})
 
-	Context("When feature gate is enabled", func() {
+	Context("When CPMSMachineNamePrefix feature gate is enabled", func() {
 
-		var mgrCancel context.CancelFunc
-		var mgrDone chan struct{}
+		var mgrCancel, fgCancel context.CancelFunc
+		var mgrDone, fgDone chan struct{}
 		var mgr ctrl.Manager
 
 		var namespaceName string
@@ -1554,6 +1692,10 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			Expect(err).ToNot(HaveOccurred(), "Manager should be able to be created")
 
 			By("Setting up a featureGateAccessor")
+			var fgCtx context.Context
+			fgCtx, fgCancel = context.WithCancel(context.Background())
+			fgDone = make(chan struct{})
+
 			reCreateFeatureGate(releaseVersion,
 				[]configv1.FeatureGateAttributes{ // enabled
 					{
@@ -1563,7 +1705,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				[]configv1.FeatureGateAttributes{}, // disabled
 			)
 
-			featureGateAccessor, err := util.SetupFeatureGateAccessor(mgr)
+			featureGateAccessor, err := util.SetupFeatureGateAccessor(fgCtx, mgr)
 			Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
 			reconciler := &ControlPlaneMachineSetReconciler{
@@ -1583,6 +1725,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			go func() {
 				defer GinkgoRecover()
 				defer close(mgrDone)
+				defer close(fgDone)
 
 				Expect(mgr.Start(mgrCtx)).To(Succeed())
 			}()
@@ -1597,6 +1740,10 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			mgrCancel()
 			// Wait for the mgrDone to be closed, which will happen once the mgr has stopped
 			<-mgrDone
+
+			By("Stopping the featureGateAccessor")
+			fgCancel()
+			<-fgDone
 
 			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 				&corev1.Node{},
