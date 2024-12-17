@@ -40,7 +40,6 @@ import (
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/e2e/helpers"
 	"github.com/openshift/cluster-control-plane-machine-set-operator/test/integration"
 
-	// "github.com/openshift/library-go/pkg/operator/configobserver/featuregates"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1075,7 +1074,6 @@ var _ = Describe("With a running controller", func() {
 
 	Context("with updated machines", func() {
 		var cpms *machinev1.ControlPlaneMachineSet
-		prefix := "ckyal-prefix"
 
 		BeforeEach(func() {
 			By("Creating Machines owned by the ControlPlaneMachineSet")
@@ -1123,7 +1121,6 @@ var _ = Describe("With a running controller", func() {
 			// The default CPMS should be sufficient for this test.
 			By("Creating the ControlPlaneMachineSet")
 			cpms = machinev1resourcebuilder.ControlPlaneMachineSet().WithNamespace(namespaceName).WithMachineTemplateBuilder(tmplBuilder).Build()
-			cpms.Spec.MachineNamePrefix = prefix
 			Expect(k8sClient.Create(ctx, cpms)).Should(Succeed())
 
 			By("Waiting for the ControlPlaneMachineSet to report a stable status")
@@ -1176,35 +1173,6 @@ var _ = Describe("With a running controller", func() {
 				helpers.EventuallyIndexIsBeingReplaced(ctx, testFramework, index)
 			})
 
-			It("creates machines with and without the prefixed name", func() {
-				nameMatcherWithPrefix := MatchRegexp(fmt.Sprintf("%s-[a-z0-9]{5}-%d", prefix, index)) // For the prefixed machine
-
-				nameWithoutPrefix1 := "master-0" // Index 0 should follow old name
-				nameWithoutPrefix2 := "master-2" // Index 2 should follow old name
-
-				By("Checking creates machines with and without the prefixed name")
-
-				machineList := &machinev1beta1.MachineList{}
-				Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items", HaveLen(3))) // Should have 3 machines
-
-				Eventually(komega.ObjectList(machineList, client.InNamespace(namespaceName))).Should(HaveField("Items",
-					SatisfyAll(
-						ContainElement(HaveField("ObjectMeta.Name", nameMatcherWithPrefix)),
-						ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix1))),
-						ContainElement(HaveField("ObjectMeta.Name", Equal(nameWithoutPrefix2))),
-					),
-				))
-			})
-
-			It("should update the status", func() {
-				Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
-					HaveField("ObservedGeneration", Equal(int64(1))),
-					HaveField("Replicas", Equal(int32(3))),
-					HaveField("ReadyReplicas", Equal(int32(3))),
-					HaveField("UpdatedReplicas", Equal(int32(3))),
-					HaveField("UnavailableReplicas", Equal(int32(0))),
-				)))
-			})
 		})
 	})
 
@@ -1638,9 +1606,9 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			)
 		})
 
-		Context("when Control Plane Machine Set is created with a RollingUpdate strategy", func() {
+		Context("when Control Plane Machine Set is updated to set MachineNamePrefix", func() {
 			var cpms *machinev1.ControlPlaneMachineSet
-			var testOptions helpers.RollingUpdatePeriodicTestOptions
+			testOptions := helpers.RollingUpdatePeriodicTestOptions{}
 			prefix := "control-plane-prefix"
 
 			BeforeEach(func() {
@@ -1726,6 +1694,15 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 				))
 			})
 
+			It("should keep the status unchanged consistently", func() {
+				Consistently(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
+					HaveField("Replicas", Equal(int32(3))),
+					HaveField("ReadyReplicas", Equal(int32(3))),
+					HaveField("UpdatedReplicas", Equal(int32(3))),
+					HaveField("UnavailableReplicas", Equal(int32(0))),
+				)))
+			})
+
 			Context("and the instance size is changed", func() {
 				JustBeforeEach(func() {
 					helpers.IncreaseControlPlaneMachineSetInstanceSize(testOptions.TestFramework, 10*time.Second, 1*time.Second)
@@ -1785,16 +1762,6 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 						),
 					))
 				})
-
-				// It("should update the status", func() {
-				// 	Eventually(komega.Object(cpms)).Should(HaveField("Status", SatisfyAll(
-				// 		HaveField("ObservedGeneration", Equal(int64(1))),
-				// 		HaveField("Replicas", Equal(int32(3))),
-				// 		HaveField("ReadyReplicas", Equal(int32(3))),
-				// 		HaveField("UpdatedReplicas", Equal(int32(3))),
-				// 		HaveField("UnavailableReplicas", Equal(int32(0))),
-				// 	)))
-				// })
 			})
 		})
 
