@@ -192,6 +192,17 @@ var _ = Describe("With a running controller", func() {
 		var fgCtx context.Context
 		fgCtx, fgCancel = context.WithCancel(context.Background())
 		fgDone = make(chan struct{})
+
+		createFeatureGate(
+			releaseVersion,
+			[]configv1.FeatureGateAttributes{ // enabled
+				{
+					Name: "CPMSMachineNamePrefix",
+				},
+			},
+			[]configv1.FeatureGateAttributes{}, // disabled
+		)
+
 		featureGateAccessor, err := util.SetupFeatureGateAccessor(fgCtx, mgr)
 		Expect(err).ToNot(HaveOccurred(), "Feature gate accessor should be created")
 
@@ -231,6 +242,9 @@ var _ = Describe("With a running controller", func() {
 		By("Stopping the featureGateAccessor")
 		fgCancel()
 		<-fgDone
+
+		// Remove Featuregate
+		testutils.CleanupResources(Default, ctx, cfg, k8sClient, "", &configv1.FeatureGate{})
 
 		testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 			&corev1.Node{},
@@ -1478,7 +1492,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			fgCtx, fgCancel = context.WithCancel(context.Background())
 			fgDone = make(chan struct{})
 
-			reCreateFeatureGate(releaseVersion,
+			createFeatureGate(releaseVersion,
 				[]configv1.FeatureGateAttributes{}, // enabled
 
 				[]configv1.FeatureGateAttributes{ // disabled
@@ -1527,6 +1541,9 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			By("Stopping the featureGateAccessor")
 			fgCancel()
 			<-fgDone
+
+			// Remove Featuregate
+			testutils.CleanupResources(Default, ctx, cfg, k8sClient, "", &configv1.FeatureGate{})
 
 			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 				&corev1.Node{},
@@ -1696,7 +1713,7 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			fgCtx, fgCancel = context.WithCancel(context.Background())
 			fgDone = make(chan struct{})
 
-			reCreateFeatureGate(releaseVersion,
+			createFeatureGate(releaseVersion,
 				[]configv1.FeatureGateAttributes{ // enabled
 					{
 						Name: "CPMSMachineNamePrefix",
@@ -1744,6 +1761,9 @@ var _ = Describe("With a running controller and machine name prefix", func() {
 			By("Stopping the featureGateAccessor")
 			fgCancel()
 			<-fgDone
+
+			// Remove Featuregate
+			testutils.CleanupResources(Default, ctx, cfg, k8sClient, "", &configv1.FeatureGate{})
 
 			testutils.CleanupResources(Default, ctx, cfg, k8sClient, namespaceName,
 				&corev1.Node{},

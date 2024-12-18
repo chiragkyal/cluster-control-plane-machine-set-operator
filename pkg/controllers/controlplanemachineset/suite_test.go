@@ -109,15 +109,6 @@ var _ = BeforeSuite(func() {
 	Expect(os.Setenv("RELEASE_VERSION", releaseVersion)).To(Succeed())
 
 	createClusterVersion(releaseVersion)
-	createFeatureGate(
-		releaseVersion,
-		[]configv1.FeatureGateAttributes{ // enabled
-			{
-				Name: "CPMSMachineNamePrefix",
-			},
-		},
-		[]configv1.FeatureGateAttributes{}, // disabled
-	)
 
 	komega.SetClient(k8sClient)
 	komega.SetContext(ctx)
@@ -178,14 +169,4 @@ func createFeatureGate(version string, enabled []configv1.FeatureGateAttributes,
 	Expect(k8sClient.Create(ctx, featureGate)).To(Succeed())
 	featureGate.Status = *fgStatus
 	Expect(k8sClient.Status().Update(ctx, featureGate)).To(Succeed())
-}
-
-func reCreateFeatureGate(version string, enabled []configv1.FeatureGateAttributes, disabled []configv1.FeatureGateAttributes) {
-	// Delete the existing featureGate
-	fg := &configv1.FeatureGate{}
-	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "cluster"}, fg)).To(Succeed())
-	Expect(k8sClient.Delete(ctx, fg)).To(Succeed())
-
-	// Create a new featureGate
-	createFeatureGate(version, enabled, disabled)
 }
