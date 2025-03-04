@@ -33,7 +33,7 @@ import (
 var _ = Describe("ControlPlaneMachineSet Operator", framework.Periodic(), func() {
 	BeforeEach(func() {
 		helpers.EventuallyClusterOperatorsShouldStabilise(1*time.Minute, 10*time.Minute, 10*time.Second)
-	})
+	}, OncePerOrdered)
 
 	Context("With an active ControlPlaneMachineSet", func() {
 		BeforeEach(func() {
